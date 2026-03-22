@@ -84,7 +84,7 @@ export default function QuotesPage() {
           <div className="flex items-center gap-2.5">
             <Sparkles className="w-5 h-5 text-primary" />
             <h1 className="text-lg font-semibold text-foreground tracking-tight" style={{ fontFamily: "var(--font-heading)" }}>
-              Quotations
+              Words That Move Me
             </h1>
           </div>
           <button
