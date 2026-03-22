@@ -1,0 +1,15 @@
+{
+  "name": "NexDay",
+  "short_name": "NexDay",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#7C4DFF",
+  "background_color": "#FAF8FF",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

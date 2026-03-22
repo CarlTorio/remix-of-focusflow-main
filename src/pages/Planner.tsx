@@ -1,0 +1,466 @@
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { useMusic } from "@/contexts/MusicContext";
+import { useNavigate } from "react-router-dom";
+import { format, addDays, startOfWeek, isToday, isPast, startOfDay, differenceInCalendarDays, parseISO } from "date-fns";
+import { ChevronLeft, ChevronRight, Plus, ClipboardList, Music, Pause } from "lucide-react";
+import { MobileHeader } from "@/components/navigation/MobileHeader";
+import { cn } from "@/lib/utils";
+import { DayColumn } from "@/components/planner/DayColumn";
+import { DailySummaryBanner } from "@/components/planner/DailySummaryBanner";
+
+import { DailyRoutineSection } from "@/components/planner/DailyRoutineSection";
+import { Skeleton } from "@/components/ui/skeleton";
+import { usePlanner, ScheduleWithTask } from "@/hooks/usePlanner";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { useAuth } from "@/contexts/AuthContext";
+
+// No daily limits — all unfinished tasks appear on every future day.
+// Done tasks only appear on the day they were completed.
+
+const formatTime = (s: number) => {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+};
+
+const isDoneStatus = (status: string | null) => status === "completed";
+
+const getTaskPriority = (schedule: ScheduleWithTask) =>
+schedule.task?.priority === "none" || schedule.task?.priority === "low" ?
+"medium" :
+schedule.task?.priority || "medium";
+
+const dedupeByTask = (items: ScheduleWithTask[]) => {
+  const seen = new Set<string>();
+  return items.filter((s) => {
+    if (seen.has(s.task_id)) return false;
+    seen.add(s.task_id);
+    return true;
+  });
+};
+
+const mergeCarryAndRaw = (carry: ScheduleWithTask[], raw: ScheduleWithTask[]) => {
+  const merged = [...carry];
+  const byTask = new Map<string, number>();
+  merged.forEach((s, i) => byTask.set(s.task_id, i));
+
+  raw.forEach((s) => {
+    const idx = byTask.get(s.task_id);
+    if (idx === undefined) {
+      merged.push(s);
+      byTask.set(s.task_id, merged.length - 1);
+    } else {
+      merged[idx] = s;
+    }
+  });
+
+  return merged;
+};
+
+const sortMediumByUrgency = (items: ScheduleWithTask[], referenceDate: Date) => {
+  return [...items].sort((a, b) => {
+    const daysA = a.task?.due_date ? differenceInCalendarDays(parseISO(a.task.due_date), referenceDate) : 999;
+    const daysB = b.task?.due_date ? differenceInCalendarDays(parseISO(b.task.due_date), referenceDate) : 999;
+    const urgentA = daysA <= 3 ? 0 : 1;
+    const urgentB = daysB <= 3 ? 0 : 1;
+
+    if (urgentA !== urgentB) return urgentA - urgentB;
+    if (urgentA === 0 && urgentB === 0) return daysA - daysB;
+    return (a.created_at || "").localeCompare(b.created_at || "");
+  });
+};
+
+/**
+ * Daily planner projection:
+ * - ALL unfinished tasks (not started / in progress) appear on every future day
+ * - Completed tasks stay ONLY on the day they were completed
+ */
+function computeSpillover(
+  schedulesByDate: Record<string, ScheduleWithTask[]>,
+  sortedDates: string[]
+): Record<string, ScheduleWithTask[]> {
+  const result: Record<string, ScheduleWithTask[]> = {};
+  const todayStart = startOfDay(new Date());
+
+  let highCarry: ScheduleWithTask[] = [];
+  let mediumCarry: ScheduleWithTask[] = [];
+  const doneTaskIds = new Set<string>();
+
+  for (const dateStr of sortedDates) {
+    const dayDate = startOfDay(parseISO(dateStr));
+    const isFutureDay = dayDate > todayStart;
+    const isTodayDay = dayDate.getTime() === todayStart.getTime();
+    const isPastDay = dayDate < todayStart;
+
+    const rawAll = (schedulesByDate[dateStr] || []).filter((s) => !doneTaskIds.has(s.task_id));
+
+    // Dedup per task_id: if ANY schedule for a task is completed, treat the task as done
+    const taskStatusMap = new Map<string, { hasCompleted: boolean; schedules: ScheduleWithTask[] }>();
+    rawAll.forEach((s) => {
+      const entry = taskStatusMap.get(s.task_id) || { hasCompleted: false, schedules: [] };
+      if (isDoneStatus(s.status)) entry.hasCompleted = true;
+      entry.schedules.push(s);
+      taskStatusMap.set(s.task_id, entry);
+    });
+
+    const rawDone: ScheduleWithTask[] = [];
+    const rawActive: ScheduleWithTask[] = [];
+    taskStatusMap.forEach((entry, taskId) => {
+      const rep = entry.schedules[0];
+      if (entry.hasCompleted) {
+        doneTaskIds.add(taskId);
+        rawDone.push(rep);
+      } else {
+        rawActive.push(rep);
+      }
+    });
+
+    highCarry = highCarry.filter((s) => !doneTaskIds.has(s.task_id));
+    mediumCarry = mediumCarry.filter((s) => !doneTaskIds.has(s.task_id));
+
+    // For PAST days: only show tasks that were completed on that specific day.
+    // Unfinished/skipped tasks have been carried forward and should NOT appear here.
+    if (isPastDay) {
+      const rawHighDone = rawDone.filter((s) => getTaskPriority(s) === "high");
+      const rawMediumDone = rawDone.filter((s) => getTaskPriority(s) !== "high");
+      result[dateStr] = [...rawHighDone, ...rawMediumDone];
+      // Still track active tasks for carry-forward to today/future
+      const rawHighActive = rawActive.filter((s) => getTaskPriority(s) === "high");
+      const rawMediumActive = rawActive.filter((s) => getTaskPriority(s) !== "high");
+      highCarry = mergeCarryAndRaw(highCarry, rawHighActive).filter((s) => !doneTaskIds.has(s.task_id));
+      mediumCarry = sortMediumByUrgency(
+        mergeCarryAndRaw(mediumCarry, rawMediumActive).filter((s) => !doneTaskIds.has(s.task_id)),
+        dayDate
+      );
+      continue;
+    }
+
+    // Today and future days: show all unfinished (carry + raw) plus completed (today only)
+    const rawHighActive = rawActive.filter((s) => getTaskPriority(s) === "high");
+    const rawMediumActive = rawActive.filter((s) => getTaskPriority(s) !== "high");
+
+    const rawHighDone = rawDone.filter((s) => getTaskPriority(s) === "high");
+    const rawMediumDone = rawDone.filter((s) => getTaskPriority(s) !== "high");
+
+    const highCandidates = mergeCarryAndRaw(highCarry, rawHighActive).filter((s) => !doneTaskIds.has(s.task_id));
+    const mediumCandidates = sortMediumByUrgency(
+      mergeCarryAndRaw(mediumCarry, rawMediumActive).filter((s) => !doneTaskIds.has(s.task_id)),
+      dayDate
+    );
+
+    const visibleHigh = highCandidates;
+    const visibleMedium = mediumCandidates;
+
+    highCarry = highCandidates;
+    mediumCarry = mediumCandidates;
+
+    const doneForDisplay = isFutureDay ? [] : [...rawHighDone, ...rawMediumDone];
+    result[dateStr] = [...visibleHigh, ...visibleMedium, ...doneForDisplay];
+  }
+
+  return result;
+}
+
+export default function Planner() {
+  const isMobile = useIsMobile();
+  const navigate = useNavigate();
+  const { profile } = useAuth();
+  const userName = profile?.first_name ? `${profile.first_name} ${profile.last_name || ""}`.trim() : "";
+  const [baseDate, setBaseDate] = useState(new Date());
+  const [selectedMobileDay, setSelectedMobileDay] = useState(new Date());
+  const [pastRevealed, setPastRevealed] = useState(false);
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const { isPlaying: isPlayingMusic, progress: audioProgress, currentTime: audioCurrentTime, duration: audioDuration, toggle: toggleRelaxMusic } = useMusic();
+
+  // Expand query context so hidden overflow keeps distributing to later days.
+  const dateRange = useMemo(() => {
+    const visibleStart = isMobile ? selectedMobileDay : baseDate;
+    const projectionStart = addDays(visibleStart, -30);
+    const projectionEnd = isMobile ? addDays(selectedMobileDay, 6) : addDays(baseDate, 7);
+
+    return {
+      projectionStart,
+      projectionEnd,
+      startStr: format(projectionStart, "yyyy-MM-dd"),
+      endStr: format(projectionEnd, "yyyy-MM-dd")
+    };
+  }, [baseDate, selectedMobileDay, isMobile]);
+
+  const {
+    schedules,
+    isLoading,
+    dueSoonTasks,
+    carriedCount,
+    totalToday,
+    completeSchedule,
+    completeSubtaskDirect,
+    handleMissed,
+    updateTask,
+    deleteTask
+  } = usePlanner(dateRange.startStr, dateRange.endStr);
+
+  // Group raw schedules by date
+  const rawSchedulesByDate = useMemo(() => {
+    const map: Record<string, ScheduleWithTask[]> = {};
+    schedules.forEach((s) => {
+      if (!map[s.scheduled_date]) map[s.scheduled_date] = [];
+      map[s.scheduled_date].push(s);
+    });
+    return map;
+  }, [schedules]);
+
+  // Compute spillover-adjusted schedules using full projection context.
+  const schedulesByDate = useMemo(() => {
+    const dates: string[] = [];
+    let cur = dateRange.projectionStart;
+
+    while (cur <= dateRange.projectionEnd) {
+      dates.push(format(cur, "yyyy-MM-dd"));
+      cur = addDays(cur, 1);
+    }
+
+    return computeSpillover(rawSchedulesByDate, dates);
+  }, [rawSchedulesByDate, dateRange.projectionStart, dateRange.projectionEnd]);
+
+  // Navigation
+  const navDate = (dir: number) => {
+    setBaseDate((prev) => addDays(prev, dir * 1));
+    if (isMobile) {
+      setSelectedMobileDay((prev) => addDays(prev, dir));
+      setPastRevealed(false);
+      setSummaryOpen(false);
+    }
+  };
+
+  const headerText = useMemo(() => {
+    if (isMobile) return format(selectedMobileDay, "MMMM d");
+    return format(baseDate, "MMMM d");
+  }, [baseDate, selectedMobileDay, isMobile]);
+
+  const mobileDays = useMemo(() => {
+    const start = startOfWeek(selectedMobileDay, { weekStartsOn: 1 });
+    return Array.from({ length: 7 }, (_, i) => addDays(start, i));
+  }, [selectedMobileDay]);
+
+  const openAddTask = useCallback((date?: Date, tab?: string) => {
+    const d = date || new Date();
+    const params = new URLSearchParams({ date: format(d, "yyyy-MM-dd") });
+    if (tab) params.set("tab", tab);
+    navigate(`/add-task?${params.toString()}`);
+  }, [navigate]);
+
+  const handleEditRoutine = useCallback((routine: {id: string;}) => {
+    const params = new URLSearchParams({ tab: "routine", editRoutine: routine.id });
+    navigate(`/add-task?${params.toString()}`);
+  }, [navigate]);
+
+  // Tooltip hint for FAB — show for 2 days after first task is created
+  const [showFabHint, setShowFabHint] = useState(false);
+  useEffect(() => {
+    const dismissedAt = localStorage.getItem("fab_hint_first_task_at");
+    if (!dismissedAt) {
+      // No first task yet — show hint
+      setShowFabHint(true);
+    } else {
+      const hoursSince = (Date.now() - Number(dismissedAt)) / (1000 * 60 * 60);
+      setShowFabHint(hoursSince < 1);
+    }
+  }, [schedules]);
+
+  const dismissFabHint = useCallback(() => {
+    if (!localStorage.getItem("fab_hint_first_task_at")) {
+      localStorage.setItem("fab_hint_first_task_at", String(Date.now()));
+    }
+    setShowFabHint(false);
+  }, []);
+
+  // Focus mode
+
+  const selectedDate = isMobile ? selectedMobileDay : new Date();
+  const isPastSelected = isMobile && !isToday(selectedMobileDay) && isPast(startOfDay(selectedMobileDay));
+
+  return (
+    <>
+
+      <div className="pb-20 md:pb-8">
+        <MobileHeader title="Planner" />
+
+        <div className="mx-auto max-w-6xl px-4 py-2">
+          <div className="hidden md:block mb-4 text-center">
+            <h1 className="text-xl font-bold uppercase tracking-wider" style={{ color: "#7C4DFF" }}>PLANNER</h1>
+          </div>
+
+          {/* Date Navigation */}
+          <div className="mb-4 flex items-center justify-center gap-3">
+            <button onClick={() => navDate(-1)} className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-muted transition-colors">
+              <ChevronLeft className="h-5 w-5 text-foreground" />
+            </button>
+            <span className="text-lg font-bold text-foreground whitespace-nowrap">{headerText}</span>
+            <button onClick={() => navDate(1)} className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-muted transition-colors">
+              <ChevronRight className="h-5 w-5 text-foreground" />
+            </button>
+          </div>
+
+          {isLoading ?
+          <div className="space-y-4">
+              <Skeleton className="h-16 w-full rounded-2xl" />
+              <Skeleton className="h-64 w-full rounded-xl" />
+            </div> :
+
+          <>
+              {/* Mobile Day Selector */}
+              {isMobile &&
+            <div className="mb-4 flex items-center justify-between rounded-xl bg-primary/5 p-2">
+                  {mobileDays.map((day) => {
+                const selected = format(day, "yyyy-MM-dd") === format(selectedMobileDay, "yyyy-MM-dd");
+                const current = isToday(day);
+                return (
+                  <button key={day.toISOString()} onClick={() => {setSelectedMobileDay(day);setPastRevealed(false);setSummaryOpen(false);}} className="flex flex-col items-center gap-0.5 px-1">
+                        <span className="text-[10px] uppercase text-muted-foreground">{format(day, "EEE")}</span>
+                        <span className={cn("flex h-8 w-8 items-center justify-center rounded-full text-sm font-bold transition-colors",
+                    selected ? "bg-primary text-primary-foreground" : current ? "bg-primary/10 text-primary" : "text-foreground"
+                    )}>{format(day, "d")}</span>
+                        {current && <span className="text-[8px] font-semibold text-primary">Today</span>}
+                      </button>);
+
+              })}
+                </div>
+            }
+
+
+
+
+              {/* Blur overlay for past days (mobile) */}
+              {isPastSelected && !pastRevealed ?
+            <div className="relative">
+                  <div className="blur-[3px] pointer-events-none select-none opacity-50">
+                    <DailyRoutineSection onEditRoutine={handleEditRoutine} selectedDate={selectedDate} />
+                    <div className="flex flex-col gap-6 mt-4">
+                      <DayColumn
+                    date={selectedMobileDay}
+                    schedules={schedulesByDate[format(selectedMobileDay, "yyyy-MM-dd")] || []}
+                    onComplete={() => {}}
+                    onAddTask={() => {}}
+                    onOpenFocus={() => {}}
+                    userName={userName}
+                    externalOpenSummary={summaryOpen}
+                    onSummaryOpenChange={setSummaryOpen} />
+                  
+                    </div>
+                  </div>
+                  <div className="absolute inset-0 flex flex-col items-center gap-3" style={{ justifyContent: 'start', paddingTop: '50%' }}>
+                    <button
+                  onClick={() => setSummaryOpen(true)}
+                  className="flex items-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-bold text-primary-foreground shadow-lg hover:bg-primary/90 transition-colors">
+                  
+                      <ClipboardList className="h-4 w-4" />
+                      View Summary
+                    </button>
+                    <button
+                  onClick={() => setPastRevealed(true)}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2">
+                  
+                      Show tasks instead
+                    </button>
+                  </div>
+                </div> :
+
+            <>
+                  {isMobile && <DailyRoutineSection onEditRoutine={handleEditRoutine} selectedDate={selectedDate} />}
+
+                  <div className={cn("flex gap-6", isMobile && "flex-col")}>
+                    {isMobile ?
+                <DayColumn
+                  date={selectedMobileDay}
+                  schedules={schedulesByDate[format(selectedMobileDay, "yyyy-MM-dd")] || []}
+                  onComplete={(id) => completeSchedule.mutate({ scheduleId: id })}
+                  onAddTask={() => openAddTask(selectedMobileDay)}
+                  onOpenFocus={() => {}}
+                  userName={userName}
+                  onCompleteSubtask={(sid, tid) => completeSubtaskDirect.mutate({ subtaskId: sid, taskId: tid })}
+                  onUpdateTask={(input) => updateTask.mutate(input)}
+                  onDeleteTask={(id) => deleteTask.mutate(id)}
+                  externalOpenSummary={summaryOpen}
+                  onSummaryOpenChange={setSummaryOpen} /> :
+
+
+                <>
+                        <div className="flex-1 min-w-0">
+                          <DayColumn date={baseDate} schedules={schedulesByDate[format(baseDate, "yyyy-MM-dd")] || []} onComplete={(id) => completeSchedule.mutate({ scheduleId: id })} onAddTask={() => openAddTask(baseDate)} onOpenFocus={() => {}} userName={userName} onCompleteSubtask={(sid, tid) => completeSubtaskDirect.mutate({ subtaskId: sid, taskId: tid })} onUpdateTask={(input) => updateTask.mutate(input)} onDeleteTask={(id) => deleteTask.mutate(id)} />
+                        </div>
+                        <div className="w-px bg-border hidden md:block" />
+                        <div className="flex-1 min-w-0">
+                          {/* Spacer to align with day header in DayColumn */}
+                          <div className="mb-4 h-[36px]" />
+                          <DailyRoutineSection onEditRoutine={handleEditRoutine} selectedDate={baseDate} />
+                        </div>
+                      </>
+                }
+                  </div>
+                </>
+            }
+            </>
+          }
+        </div>
+
+        {/* FAB with hint tooltip */}
+        <div className="fixed bottom-24 right-4 left-4 md:left-auto z-40 md:bottom-6 flex items-center gap-3 justify-end">
+          {/* Relaxing music player */}
+          <div className="flex items-center gap-2 min-w-0">
+            {isPlayingMusic &&
+            <div className="flex items-center gap-2 rounded-full bg-card/95 backdrop-blur-sm border border-border px-3 py-2.5 shadow-lg animate-in slide-in-from-right-4 fade-in duration-300 min-w-0 flex-1">
+                <span className="text-sm font-mono font-semibold text-foreground tabular-nums shrink-0">
+                  {formatTime(audioCurrentTime)}
+                </span>
+                <div className="h-1.5 flex-1 min-w-0 rounded-full bg-muted overflow-hidden">
+                  <div
+                  className="h-full rounded-full bg-primary transition-all duration-500 ease-linear"
+                  style={{ width: `${audioProgress}%` }} />
+                
+                </div>
+                
+
+              
+              </div>
+            }
+            <button
+              onClick={toggleRelaxMusic}
+              className={cn(
+                "flex items-center gap-2 rounded-full shadow-lg transition-all hover:scale-105 active:scale-95 px-4 py-2.5 shrink-0",
+                isPlayingMusic ?
+                "bg-primary text-primary-foreground" :
+                "bg-card text-card-foreground border border-border hover:bg-accent"
+              )}>
+              
+              {isPlayingMusic ? <Pause className="h-4 w-4 shrink-0" /> : <Music className="h-4 w-4 shrink-0" />}
+              <span className="text-xs font-medium whitespace-nowrap">
+                {isPlayingMusic ? "Pause" : "Relaxing Music 🧠"}
+              </span>
+            </button>
+          </div>
+
+          {/* Add task FAB */}
+          <div className="relative">
+            {showFabHint &&
+            <div className="absolute bottom-16 right-0 mb-2 w-48 animate-bounce">
+                <div className="relative rounded-xl bg-primary px-4 py-2 text-xs font-medium text-primary-foreground shadow-lg">
+                  Tap here to add a task!
+                  <div className="absolute -bottom-1.5 right-5 h-3 w-3 rotate-45 bg-primary" />
+                </div>
+              </div>
+            }
+            <button
+              onClick={() => {
+                dismissFabHint();
+                openAddTask();
+              }}
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-110 active:scale-95">
+              
+              <Plus className="h-6 w-6" />
+            </button>
+          </div>
+        </div>
+      </div>
+    </>);
+
+}
