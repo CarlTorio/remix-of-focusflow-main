@@ -466,6 +466,7 @@ export default function QuotesPage() {
                     quote={quote}
                     isEditing={isEditing}
                     onDelete={handleDelete}
+                    onUpdate={handleUpdateQuote}
                   />
                 ))}
               </div>
