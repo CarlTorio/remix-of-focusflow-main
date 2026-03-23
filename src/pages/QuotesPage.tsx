@@ -101,11 +101,14 @@ function SortableQuoteCard({
   quote,
   isEditing,
   onDelete,
+  onUpdate,
 }: {
   quote: QuoteEntry;
   isEditing: boolean;
   onDelete: (id: string) => void;
+  onUpdate: (id: string, fields: Partial<Pick<QuoteEntry, "text" | "author">>) => void;
 }) {
+  const editorRef = useRef<HTMLDivElement>(null);
   const {
     attributes,
     listeners,
@@ -120,6 +123,14 @@ function SortableQuoteCard({
     transition,
     zIndex: isDragging ? 50 : undefined,
     opacity: isDragging ? 0.85 : 1,
+  };
+
+  const execCommand = (command: string, value?: string) => {
+    document.execCommand(command, false, value);
+    if (editorRef.current) {
+      onUpdate(quote.id, { text: editorRef.current.innerHTML });
+    }
+    editorRef.current?.focus();
   };
 
   return (
@@ -141,15 +152,48 @@ function SortableQuoteCard({
           </button>
         )}
         <div className="flex-1 min-w-0">
-          <Quote className="absolute top-3 right-3 w-4 h-4 text-muted-foreground/20 group-hover:text-primary/30 transition-colors duration-300" />
-          <div
-            className="text-foreground text-sm leading-relaxed mb-3 pr-5 [&_b]:font-bold [&_i]:italic [&_u]:underline"
-            style={{ textWrap: "pretty" as any }}
-            dangerouslySetInnerHTML={{ __html: `"${quote.text}"` }}
-          />
-          <p className="text-xs text-muted-foreground font-medium">
-            — {quote.author}
-          </p>
+          {isEditing ? (
+            <>
+              {/* Inline formatting toolbar */}
+              <div className="flex items-center gap-0.5 mb-2">
+                <button type="button" onMouseDown={(e) => { e.preventDefault(); execCommand("bold"); }} className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors" title="Bold"><Bold className="w-3.5 h-3.5" /></button>
+                <button type="button" onMouseDown={(e) => { e.preventDefault(); execCommand("italic"); }} className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors" title="Italic"><Italic className="w-3.5 h-3.5" /></button>
+                <button type="button" onMouseDown={(e) => { e.preventDefault(); execCommand("underline"); }} className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors" title="Underline"><Underline className="w-3.5 h-3.5" /></button>
+                <button type="button" onMouseDown={(e) => { e.preventDefault(); execCommand("hiliteColor", "#fef08a"); }} className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors" title="Highlight"><Highlighter className="w-3.5 h-3.5" /></button>
+              </div>
+              {/* Editable quote text */}
+              <div
+                ref={editorRef}
+                contentEditable
+                suppressContentEditableWarning
+                onInput={() => {
+                  if (editorRef.current) onUpdate(quote.id, { text: editorRef.current.innerHTML });
+                }}
+                className="text-foreground text-sm leading-relaxed mb-3 pr-5 [&_b]:font-bold [&_i]:italic [&_u]:underline border border-border/50 rounded-lg px-3 py-2 bg-muted/30 focus:outline-none focus:ring-2 focus:ring-ring/40 min-h-[40px]"
+                dangerouslySetInnerHTML={{ __html: quote.text }}
+              />
+              {/* Editable author */}
+              <input
+                type="text"
+                value={quote.author}
+                onChange={(e) => onUpdate(quote.id, { author: e.target.value })}
+                className="w-full text-xs text-muted-foreground font-medium bg-muted/30 border border-border/50 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-ring/40"
+                placeholder="Author"
+              />
+            </>
+          ) : (
+            <>
+              <Quote className="absolute top-3 right-3 w-4 h-4 text-muted-foreground/20 group-hover:text-primary/30 transition-colors duration-300" />
+              <div
+                className="text-foreground text-sm leading-relaxed mb-3 pr-5 [&_b]:font-bold [&_i]:italic [&_u]:underline"
+                style={{ textWrap: "pretty" as any }}
+                dangerouslySetInnerHTML={{ __html: `"${quote.text}"` }}
+              />
+              <p className="text-xs text-muted-foreground font-medium">
+                — {quote.author}
+              </p>
+            </>
+          )}
         </div>
         {isEditing && (
           <button
