@@ -1,8 +1,8 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { Plus, Quote, Sparkles, Send, Pencil, GripVertical, Trash2, X, Check } from "lucide-react";
+import { Plus, Quote, Sparkles, Send, Pencil, GripVertical, Trash2, X, Check, Bold, Italic, Underline, Highlighter } from "lucide-react";
 import {
   DndContext,
   closestCenter,
@@ -26,6 +26,75 @@ interface QuoteEntry {
   author: string;
   created_at: string;
   order_index: number;
+}
+
+function RichTextEditor({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (html: string) => void;
+  placeholder?: string;
+}) {
+  const editorRef = useRef<HTMLDivElement>(null);
+
+  const execCommand = (command: string, value?: string) => {
+    document.execCommand(command, false, value);
+    if (editorRef.current) {
+      onChange(editorRef.current.innerHTML);
+    }
+    editorRef.current?.focus();
+  };
+
+  return (
+    <div className="border border-border rounded-xl overflow-hidden bg-muted/50 focus-within:ring-2 focus-within:ring-ring/40 transition-shadow duration-200">
+      <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-border/50 bg-muted/30">
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); execCommand("bold"); }}
+          className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+          title="Bold"
+        >
+          <Bold className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); execCommand("italic"); }}
+          className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+          title="Italic"
+        >
+          <Italic className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); execCommand("underline"); }}
+          className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+          title="Underline"
+        >
+          <Underline className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); execCommand("hiliteColor", "#fef08a"); }}
+          className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+          title="Highlight"
+        >
+          <Highlighter className="w-4 h-4" />
+        </button>
+      </div>
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        onInput={() => {
+          if (editorRef.current) onChange(editorRef.current.innerHTML);
+        }}
+        data-placeholder={placeholder}
+        className="px-4 py-3 min-h-[80px] text-sm leading-relaxed text-foreground focus:outline-none empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60"
+      />
+    </div>
+  );
 }
 
 function SortableQuoteCard({
@@ -57,29 +126,28 @@ function SortableQuoteCard({
     <div
       ref={setNodeRef}
       style={style}
-      className={`group relative bg-card rounded-2xl p-6 shadow-[0_1px_3px_hsl(var(--border)/0.5),0_8px_20px_hsl(var(--border)/0.15)] transition-shadow duration-300 ${
+      className={`group relative bg-card rounded-2xl p-5 shadow-[0_1px_3px_hsl(var(--border)/0.5),0_8px_20px_hsl(var(--border)/0.15)] transition-shadow duration-300 ${
         isDragging ? "shadow-[0_4px_20px_hsl(var(--primary)/0.25)] ring-2 ring-primary/30" : "hover:shadow-[0_2px_6px_hsl(var(--border)/0.6),0_12px_28px_hsl(var(--border)/0.2)]"
       }`}
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-2">
         {isEditing && (
           <button
             {...attributes}
             {...listeners}
             className="mt-1 touch-none cursor-grab active:cursor-grabbing text-muted-foreground/50 hover:text-muted-foreground transition-colors"
           >
-            <GripVertical className="w-5 h-5" />
+            <GripVertical className="w-4 h-4" />
           </button>
         )}
         <div className="flex-1 min-w-0">
-          <Quote className="absolute top-4 right-4 w-5 h-5 text-muted-foreground/20 group-hover:text-primary/30 transition-colors duration-300" />
-          <p
-            className="text-foreground text-base leading-relaxed mb-4 pr-6"
+          <Quote className="absolute top-3 right-3 w-4 h-4 text-muted-foreground/20 group-hover:text-primary/30 transition-colors duration-300" />
+          <div
+            className="text-foreground text-sm leading-relaxed mb-3 pr-5 [&_b]:font-bold [&_i]:italic [&_u]:underline"
             style={{ textWrap: "pretty" as any }}
-          >
-            "{quote.text}"
-          </p>
-          <p className="text-sm text-muted-foreground font-medium">
+            dangerouslySetInnerHTML={{ __html: `"${quote.text}"` }}
+          />
+          <p className="text-xs text-muted-foreground font-medium">
             — {quote.author}
           </p>
         </div>
@@ -88,7 +156,7 @@ function SortableQuoteCard({
             onClick={() => onDelete(quote.id)}
             className="mt-1 text-destructive/60 hover:text-destructive transition-colors"
           >
-            <Trash2 className="w-4.5 h-4.5" />
+            <Trash2 className="w-4 h-4" />
           </button>
         )}
       </div>
@@ -130,7 +198,6 @@ export default function QuotesPage() {
       const trimmedAuthor = author.trim() || "Unknown";
       if (!trimmedText) throw new Error("Quote text is required");
 
-      // New quotes get highest order_index
       const maxOrder = quotes.length > 0 ? Math.max(...quotes.map((q) => q.order_index)) + 1 : 0;
 
       const { error } = await supabase
@@ -150,7 +217,6 @@ export default function QuotesPage() {
 
   const saveOrder = useMutation({
     mutationFn: async (reordered: QuoteEntry[]) => {
-      // Batch update order_index for each quote
       const updates = reordered.map((q, i) =>
         supabase.from("quotes").update({ order_index: i }).eq("id", q.id)
       );
@@ -227,7 +293,7 @@ export default function QuotesPage() {
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="sticky top-0 z-10 bg-background/80 backdrop-blur-md border-b border-border/50">
-        <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <Sparkles className="w-5 h-5 text-primary" />
             <h1
@@ -280,21 +346,17 @@ export default function QuotesPage() {
         </div>
       </header>
 
-      <main className="max-w-2xl mx-auto px-4 py-6">
+      <main className="max-w-4xl mx-auto px-4 py-6">
         {/* Add Quote Form */}
         {showForm && !isEditing && (
           <form
             onSubmit={handleSubmit}
             className="mb-8 bg-card rounded-2xl p-5 shadow-[0_1px_3px_hsl(var(--border)/0.5),0_8px_20px_hsl(var(--border)/0.15)] animate-in fade-in slide-in-from-top-2 duration-300"
           >
-            <textarea
+            <RichTextEditor
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={setText}
               placeholder="Type the quote here…"
-              maxLength={2000}
-              rows={3}
-              className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-foreground placeholder:text-muted-foreground/60 text-sm leading-relaxed resize-none focus:outline-none focus:ring-2 focus:ring-ring/40 transition-shadow duration-200"
-              required
             />
             <input
               type="text"
@@ -307,7 +369,7 @@ export default function QuotesPage() {
             <div className="flex justify-end mt-4">
               <button
                 type="submit"
-                disabled={addQuote.isPending || !text.trim()}
+                disabled={addQuote.isPending || !text.replace(/<[^>]*>/g, '').trim()}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium shadow-sm hover:shadow-md active:scale-[0.97] disabled:opacity-50 disabled:pointer-events-none transition-all duration-200"
               >
                 <Send className="w-3.5 h-3.5" />
@@ -317,11 +379,11 @@ export default function QuotesPage() {
           </form>
         )}
 
-        {/* Quotes List */}
+        {/* Quotes Grid */}
         {isLoading ? (
-          <div className="space-y-4">
-            {[...Array(3)].map((_, i) => (
-              <div key={i} className="bg-card rounded-2xl p-6 animate-pulse">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {[...Array(4)].map((_, i) => (
+              <div key={i} className="bg-card rounded-2xl p-5 animate-pulse">
                 <div className="h-4 bg-muted rounded w-3/4 mb-3" />
                 <div className="h-4 bg-muted rounded w-1/2 mb-4" />
                 <div className="h-3 bg-muted rounded w-1/4" />
@@ -343,7 +405,7 @@ export default function QuotesPage() {
               items={displayQuotes.map((q) => q.id)}
               strategy={verticalListSortingStrategy}
             >
-              <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {displayQuotes.map((quote) => (
                   <SortableQuoteCard
                     key={quote.id}
