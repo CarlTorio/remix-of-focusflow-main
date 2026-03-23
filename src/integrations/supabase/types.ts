@@ -234,18 +234,21 @@ export type Database = {
           author: string
           created_at: string
           id: string
+          order_index: number
           text: string
         }
         Insert: {
           author?: string
           created_at?: string
           id?: string
+          order_index?: number
           text: string
         }
         Update: {
           author?: string
           created_at?: string
           id?: string
+          order_index?: number
           text?: string
         }
         Relationships: []

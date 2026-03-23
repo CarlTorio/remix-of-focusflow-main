@@ -1,29 +1,97 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { Plus, Quote, Sparkles, Send } from "lucide-react";
+import { Plus, Quote, Sparkles, Send, Pencil, GripVertical, Trash2, X, Check } from "lucide-react";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 interface QuoteEntry {
   id: string;
   text: string;
   author: string;
   created_at: string;
+  order_index: number;
 }
 
-function QuoteCard({ quote, index }: { quote: QuoteEntry; index: number }) {
+function SortableQuoteCard({
+  quote,
+  isEditing,
+  onDelete,
+}: {
+  quote: QuoteEntry;
+  isEditing: boolean;
+  onDelete: (id: string) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: quote.id, disabled: !isEditing });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : undefined,
+    opacity: isDragging ? 0.85 : 1,
+  };
+
   return (
     <div
-      className="group relative bg-card rounded-2xl p-6 shadow-[0_1px_3px_hsl(var(--border)/0.5),0_8px_20px_hsl(var(--border)/0.15)] hover:shadow-[0_2px_6px_hsl(var(--border)/0.6),0_12px_28px_hsl(var(--border)/0.2)] transition-shadow duration-300"
-      style={{ animationDelay: `${index * 80}ms` }}
+      ref={setNodeRef}
+      style={style}
+      className={`group relative bg-card rounded-2xl p-6 shadow-[0_1px_3px_hsl(var(--border)/0.5),0_8px_20px_hsl(var(--border)/0.15)] transition-shadow duration-300 ${
+        isDragging ? "shadow-[0_4px_20px_hsl(var(--primary)/0.25)] ring-2 ring-primary/30" : "hover:shadow-[0_2px_6px_hsl(var(--border)/0.6),0_12px_28px_hsl(var(--border)/0.2)]"
+      }`}
     >
-      <Quote className="absolute top-4 right-4 w-5 h-5 text-muted-foreground/20 group-hover:text-primary/30 transition-colors duration-300" />
-      <p className="text-foreground text-base leading-relaxed mb-4 pr-6" style={{ textWrap: "pretty" }}>
-        "{quote.text}"
-      </p>
-      <p className="text-sm text-muted-foreground font-medium">
-        — {quote.author}
-      </p>
+      <div className="flex items-start gap-3">
+        {isEditing && (
+          <button
+            {...attributes}
+            {...listeners}
+            className="mt-1 touch-none cursor-grab active:cursor-grabbing text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+          >
+            <GripVertical className="w-5 h-5" />
+          </button>
+        )}
+        <div className="flex-1 min-w-0">
+          <Quote className="absolute top-4 right-4 w-5 h-5 text-muted-foreground/20 group-hover:text-primary/30 transition-colors duration-300" />
+          <p
+            className="text-foreground text-base leading-relaxed mb-4 pr-6"
+            style={{ textWrap: "pretty" as any }}
+          >
+            "{quote.text}"
+          </p>
+          <p className="text-sm text-muted-foreground font-medium">
+            — {quote.author}
+          </p>
+        </div>
+        {isEditing && (
+          <button
+            onClick={() => onDelete(quote.id)}
+            className="mt-1 text-destructive/60 hover:text-destructive transition-colors"
+          >
+            <Trash2 className="w-4.5 h-4.5" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -32,6 +100,8 @@ export default function QuotesPage() {
   const [text, setText] = useState("");
   const [author, setAuthor] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [localQuotes, setLocalQuotes] = useState<QuoteEntry[] | null>(null);
   const queryClient = useQueryClient();
 
   const { data: quotes = [], isLoading } = useQuery({
@@ -40,23 +110,32 @@ export default function QuotesPage() {
       const { data, error } = await supabase
         .from("quotes")
         .select("*")
+        .order("order_index", { ascending: true })
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data as QuoteEntry[];
     },
   });
 
+  const displayQuotes = localQuotes ?? quotes;
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } })
+  );
+
   const addQuote = useMutation({
     mutationFn: async () => {
       const trimmedText = text.trim();
       const trimmedAuthor = author.trim() || "Unknown";
       if (!trimmedText) throw new Error("Quote text is required");
-      if (trimmedText.length > 2000) throw new Error("Quote is too long");
-      if (trimmedAuthor.length > 200) throw new Error("Author name is too long");
+
+      // New quotes get highest order_index
+      const maxOrder = quotes.length > 0 ? Math.max(...quotes.map((q) => q.order_index)) + 1 : 0;
 
       const { error } = await supabase
         .from("quotes")
-        .insert({ text: trimmedText, author: trimmedAuthor });
+        .insert({ text: trimmedText, author: trimmedAuthor, order_index: maxOrder });
       if (error) throw error;
     },
     onSuccess: () => {
@@ -66,10 +145,78 @@ export default function QuotesPage() {
       setShowForm(false);
       toast.success("Quote added!");
     },
-    onError: (err: Error) => {
-      toast.error(err.message);
-    },
+    onError: (err: Error) => toast.error(err.message),
   });
+
+  const saveOrder = useMutation({
+    mutationFn: async (reordered: QuoteEntry[]) => {
+      // Batch update order_index for each quote
+      const updates = reordered.map((q, i) =>
+        supabase.from("quotes").update({ order_index: i }).eq("id", q.id)
+      );
+      const results = await Promise.all(updates);
+      const failed = results.find((r) => r.error);
+      if (failed?.error) throw failed.error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quotes"] });
+      toast.success("Order saved!");
+    },
+    onError: () => toast.error("Failed to save order"),
+  });
+
+  const deleteQuote = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("quotes").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quotes"] });
+      toast.success("Quote deleted");
+    },
+    onError: () => toast.error("Failed to delete quote"),
+  });
+
+  const handleDelete = useCallback(
+    (id: string) => {
+      const updated = (localQuotes ?? quotes).filter((q) => q.id !== id);
+      setLocalQuotes(updated);
+      deleteQuote.mutate(id);
+    },
+    [localQuotes, quotes, deleteQuote]
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+
+      const current = localQuotes ?? quotes;
+      const oldIndex = current.findIndex((q) => q.id === active.id);
+      const newIndex = current.findIndex((q) => q.id === over.id);
+      const reordered = arrayMove(current, oldIndex, newIndex);
+      setLocalQuotes(reordered);
+    },
+    [localQuotes, quotes]
+  );
+
+  const handleSaveEdit = () => {
+    if (localQuotes) {
+      saveOrder.mutate(localQuotes);
+    }
+    setIsEditing(false);
+    setLocalQuotes(null);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditing(false);
+    setLocalQuotes(null);
+  };
+
+  const handleStartEdit = () => {
+    setLocalQuotes([...quotes]);
+    setIsEditing(true);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,23 +230,59 @@ export default function QuotesPage() {
         <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <Sparkles className="w-5 h-5 text-primary" />
-            <h1 className="text-lg font-semibold text-foreground tracking-tight" style={{ fontFamily: "var(--font-heading)" }}>
+            <h1
+              className="text-lg font-semibold text-foreground tracking-tight"
+              style={{ fontFamily: "var(--font-heading)" }}
+            >
               Words That Move Me
             </h1>
           </div>
-          <button
-            onClick={() => setShowForm(!showForm)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium shadow-sm hover:shadow-md active:scale-[0.97] transition-all duration-200"
-          >
-            <Plus className="w-4 h-4" />
-            Add
-          </button>
+          <div className="flex items-center gap-2">
+            {isEditing ? (
+              <>
+                <button
+                  onClick={handleCancelEdit}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-muted text-muted-foreground text-sm font-medium hover:bg-muted/80 active:scale-[0.97] transition-all duration-200"
+                >
+                  <X className="w-4 h-4" />
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveEdit}
+                  disabled={saveOrder.isPending}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium shadow-sm hover:shadow-md active:scale-[0.97] disabled:opacity-50 transition-all duration-200"
+                >
+                  <Check className="w-4 h-4" />
+                  {saveOrder.isPending ? "Saving…" : "Save"}
+                </button>
+              </>
+            ) : (
+              <>
+                {quotes.length > 0 && (
+                  <button
+                    onClick={handleStartEdit}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-muted text-muted-foreground text-sm font-medium hover:bg-muted/80 active:scale-[0.97] transition-all duration-200"
+                  >
+                    <Pencil className="w-4 h-4" />
+                    Edit
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowForm(!showForm)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium shadow-sm hover:shadow-md active:scale-[0.97] transition-all duration-200"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
       <main className="max-w-2xl mx-auto px-4 py-6">
         {/* Add Quote Form */}
-        {showForm && (
+        {showForm && !isEditing && (
           <form
             onSubmit={handleSubmit}
             className="mb-8 bg-card rounded-2xl p-5 shadow-[0_1px_3px_hsl(var(--border)/0.5),0_8px_20px_hsl(var(--border)/0.15)] animate-in fade-in slide-in-from-top-2 duration-300"
@@ -145,17 +328,33 @@ export default function QuotesPage() {
               </div>
             ))}
           </div>
-        ) : quotes.length === 0 ? (
+        ) : displayQuotes.length === 0 ? (
           <div className="text-center py-20">
             <Quote className="w-10 h-10 text-muted-foreground/30 mx-auto mb-4" />
             <p className="text-muted-foreground text-sm">No quotes yet. Add your first one!</p>
           </div>
         ) : (
-          <div className="space-y-4">
-            {quotes.map((quote, i) => (
-              <QuoteCard key={quote.id} quote={quote} index={i} />
-            ))}
-          </div>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={displayQuotes.map((q) => q.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <div className="space-y-4">
+                {displayQuotes.map((quote) => (
+                  <SortableQuoteCard
+                    key={quote.id}
+                    quote={quote}
+                    isEditing={isEditing}
+                    onDelete={handleDelete}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
         )}
       </main>
     </div>
