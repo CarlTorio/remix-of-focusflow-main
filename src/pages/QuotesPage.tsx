@@ -262,7 +262,7 @@ export default function QuotesPage() {
   const saveOrder = useMutation({
     mutationFn: async (reordered: QuoteEntry[]) => {
       const updates = reordered.map((q, i) =>
-        supabase.from("quotes").update({ order_index: i }).eq("id", q.id)
+        supabase.from("quotes").update({ order_index: i, text: q.text, author: q.author }).eq("id", q.id)
       );
       const results = await Promise.all(updates);
       const failed = results.find((r) => r.error);
