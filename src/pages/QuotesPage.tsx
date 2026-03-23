@@ -310,6 +310,16 @@ export default function QuotesPage() {
     [localQuotes, quotes]
   );
 
+  const handleUpdateQuote = useCallback(
+    (id: string, fields: Partial<Pick<QuoteEntry, "text" | "author">>) => {
+      setLocalQuotes((prev) => {
+        const current = prev ?? quotes;
+        return current.map((q) => (q.id === id ? { ...q, ...fields } : q));
+      });
+    },
+    [quotes]
+  );
+
   const handleSaveEdit = () => {
     if (localQuotes) {
       saveOrder.mutate(localQuotes);
